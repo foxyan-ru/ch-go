@@ -1,0 +1,68 @@
+name: bench
+
+# Benchmarks and profiles for the foxy fork only.
+#
+# The branch is pushed to trigger this workflow; it never runs for pull requests
+# against main and it is not part of any branch destined for upstream.
+on:
+  push:
+    branches:
+      - 'bench/**'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+
+      - name: Set up cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ runner.tool_cache }}
+          key: bench-${{ runner.os }}-${{ runner.arch }}-go1.26-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            bench-${{ runner.os }}-${{ runner.arch }}-go1.26-
+
+      - name: Install benchstat
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@v0.0.0-20260929162123-406019bb8b68
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      - name: Tests (baseline)
+        run: go test ./compress ./proto
+
+      - name: Tests (variant)
+        run: go test -tags growfast ./compress ./proto
+
+      - name: Benchmarks (baseline)
+        run: |
+          go test -run '^$' -bench 'BenchmarkReader_Read|BenchmarkWriter_Compress' -benchmem -count=10 ./compress > old.txt
+          cat old.txt
+
+      - name: Benchmarks (variant)
+        run: |
+          go test -run '^$' -bench 'BenchmarkReader_Read|BenchmarkWriter_Compress' -benchmem -count=10 -tags growfast ./compress > new.txt
+          cat new.txt
+
+      - name: Compare
+        run: benchstat old.txt new.txt
+
+      - name: Proto benchmarks (baseline)
+        run: |
+          go test -run '^$' -bench 'BenchmarkColStr_' -benchmem -count=10 ./proto
+
+      - name: Escape analysis
+        run: |
+          go build -gcflags='-m' ./compress 2>&1 | grep -E 'compress/(reader|writer|grow)\.go' || true
+
+      - name: Allocation profile
+        run: |
+          go test -run '^$' -bench 'BenchmarkReader_Read|BenchmarkWriter_Compress' -benchmem -memprofile=mem.out ./compress
+          go tool pprof -top -sample_index=alloc_space -nodecount=20 mem.out
